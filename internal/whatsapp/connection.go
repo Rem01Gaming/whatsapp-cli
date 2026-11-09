@@ -2,6 +2,7 @@ package whatsapp
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"time"
 
@@ -66,20 +67,41 @@ func (c *Client) signalSyncCompleteAfterSettleDelay() {
 // ConnectWithQR connects to WhatsApp, displaying a QR code if needed.
 func (c *Client) ConnectWithQR(ctx context.Context) error {
 	if c.WA.Store.ID == nil {
-		qrChan, _ := c.WA.GetQRChannel(ctx)
+		qrChan, err := c.WA.GetQRChannel(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to initialize QR pairing: %w", err)
+		}
 		if err := c.WA.Connect(); err != nil {
 			return err
 		}
 
-		for evt := range qrChan {
+		for {
+			evt, ok := <-qrChan
+			if !ok {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				return fmt.Errorf("QR pairing ended before WhatsApp reported success")
+			}
+
 			if evt.Event == "code" {
 				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stderr)
-			} else if evt.Event == "success" {
-				break
+				continue
+			}
+
+			switch evt.Event {
+			case "success":
+				return nil
+			case "error":
+				return fmt.Errorf("WhatsApp pairing failed: %v", evt.Error)
+			case "err-client-outdated":
+				return fmt.Errorf("WhatsApp rejected this client version (405); update whatsmeow and rebuild")
+			case "timeout":
+				return fmt.Errorf("WhatsApp QR pairing timed out")
+			default:
+				return fmt.Errorf("WhatsApp QR pairing ended with event %q", evt.Event)
 			}
 		}
-
-		return nil
 	}
 
 	return c.WA.Connect()
